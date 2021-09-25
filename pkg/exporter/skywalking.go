@@ -21,8 +21,13 @@ package exporter
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"google.golang.org/grpc/credentials"
+	"io/ioutil"
+	"log"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -43,8 +48,13 @@ type SkyWalking struct {
 }
 
 type SkyWalkingConfig struct {
-	Address  string         `mapstructure:"address"`
-	Template *EventTemplate `mapstructure:"template"`
+	Address            string         `mapstructure:"address"`
+	Template           *EventTemplate `mapstructure:"template"`
+	EnableTLS          bool           `mapstructure:"enableTls"`
+	ClientCertPath     string         `mapstructure:"clientCertPath"`
+	ClientKeyPath      string         `mapstructure:"clientKeyPath"`
+	TrustedCertPath    string         `mapstructure:"trustedCertPath"`
+	InsecureSkipVerify bool           `mapstructure:"insecureSkipVerify"`
 }
 
 func init() {
@@ -67,7 +77,36 @@ func (exporter *SkyWalking) Init(ctx context.Context) error {
 		return err
 	}
 
-	conn, err := grpc.Dial(config.Address, grpc.WithInsecure())
+	var dialOption grpc.DialOption
+	if config.EnableTLS {
+		clientCert, err := tls.LoadX509KeyPair(config.ClientCertPath, config.ClientKeyPath)
+		if err != nil {
+			log.Fatalf("Failed to load client certificate and key. %s.", err)
+		}
+		trustedCert, err := ioutil.ReadFile(config.TrustedCertPath)
+		if err != nil {
+			log.Fatalf("Failed to load trusted certificate. %s.", err)
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(trustedCert) {
+			log.Fatalf("Failed to append trusted certificate to certificate pool. %s.", err)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{clientCert},
+			RootCAs:      certPool,
+			MinVersion:   tls.VersionTLS13,
+			MaxVersion:   tls.VersionTLS13,
+		}
+		tlsConfig.InsecureSkipVerify = config.InsecureSkipVerify
+		dialOption = grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))
+
+		// credentials.NewClientTLSFromFile(certFile, "")
+	} else {
+		dialOption = grpc.WithInsecure()
+	}
+
+	conn, err := grpc.Dial(config.Address, dialOption)
 	if err != nil {
 		return err
 	}
